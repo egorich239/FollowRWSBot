@@ -2,6 +2,7 @@
 
 import argparse
 import datetime
+import enum
 import itertools
 import logging
 import os
@@ -10,7 +11,7 @@ import urllib
 
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from telegram import constants, Update, Message
 from telegram.ext import filters, ApplicationBuilder, CallbackContext, CommandHandler, \
@@ -34,7 +35,68 @@ class Config:
     token: str
     warning: str
     blocklist: str
+    filters: List[Dict[str, Any]]
     webhook: Optional[WebhookConfig] = None
+
+
+@enum.Enum
+class Verdict:
+    SAFE = 0
+    QUESTIONABLE = 10
+    SCAM = 20
+
+
+@dataclass
+class FilterResult:
+    verdict: Verdict
+    explanation: Optional[List[str]] = None
+
+    @classmethod
+    def empty(cls):
+        return cls(Verdict.SAFE)
+
+    def append(self, other: "FilterResult") -> "FilterResult":
+        v = max(self.verdict, other.verdict)
+        if self.explanation or other.explanation:
+            e = (self.explanation or []) + (other.explanation or [])
+        else:
+            e = None
+        return FilterResult(v, explanation=e)
+
+    def __str__(self):
+        res = f"{self.verdict}"
+        if self.explanation:
+            res += " based on the following evidence:" + "".join("\n{e}" for e in self.explanation)
+        return res
+
+
+@dataclass
+class BlocklistFilter:
+    blocklist: Set[str]
+
+    @classmethod
+    def from_config(cls, filename: str):
+        with open(filename, "r") as f:
+            res = cls(f.read().splitlines())
+        logging.debug(f"Blocklist: {res.blocklist}")
+        return res
+
+    def assess(self, update: Update):
+        links = set()
+        for msg in [update.message, update.edited_message]:
+            if msg is not None and msg.from_user is not None:
+                message_from = msg.from_user.id
+                reply_to = msg.message_id
+                links |= _collect_all_links(msg)
+                break
+        isec = links & self._blocklist
+        if len(isec):
+            return FilterResult(
+                verdict=Verdict.SCAM, explanation=["Message mentions blocked content: " + " ".join(
+                    sorted(isec))])
+
+
+FILTERS = {"blocklist": BlocklistFilter, }
 
 
 def _make_argparser() -> argparse.ArgumentParser:
@@ -53,11 +115,17 @@ def _collect_all_links(msg: Message) -> Set[str]:
     res: Set[str] = set()
     for e in itertools.chain(msg.entities, msg.caption_entities):
         if e.type == "url":
-            res.add(_host(msg.parse_entity(e)))
+            link = msg.parse_entity(e)
+            logging.debug(f"Extracted URL: {link}")
+            res.add(_host(link))
         elif e.type == "text_link":
-            res.add(_host(e.url))
+            link = e.url
+            logging.debug(f"Extracted text link: {link}")
+            res.add(_host(link))
         elif e.type == "mention":
-            res.add(msg.parse_entity(e).lower())
+            mention = msg.parse_entity(e).lower()
+            logging.debug(f"Extracted mention: {mention}")
+            res.add(mention)
     return res
 
 
@@ -65,17 +133,16 @@ class Bot:
     def __init__(self, cfg: Config) -> None:
         self._cfg: Config = cfg
         self._blocklist: Set[str] = set()
-        self._load_blocklist()
-        self._store_blocklist()
+        self._filters = self._load_filters()
         self._last_post: Optional[datetime.datetime] = None
 
-    def _load_blocklist(self) -> None:
-        with open(self._cfg.blocklist) as f:
-            self._blocklist = set(f.read().splitlines())
-
-    def _store_blocklist(self) -> None:
-        with open(self._cfg.blocklist, "w", newline="\n") as f:
-            f.write("".join(f"{e}\n" for e in sorted(self._blocklist)))
+    def _load_filters(self):
+        res = []
+        for f in self._cfg.filters:
+            clname = f["name"]
+            parms = {k: v for k, v in f.items() if k != "name"}
+            res.append(FILTERS[clname].from_config(**parms))
+        return res
 
     async def _handle_scam(
             self, context: CallbackContext.DEFAULT_TYPE, chat_id: int, message_from: int,
@@ -96,17 +163,20 @@ class Bot:
                 self._last_post = now
 
     async def _handle_message(self, update: Update, context: CallbackContext.DEFAULT_TYPE):
-        links = set()
-        for msg in [update.message, update.edited_message]:
-            if msg is not None and msg.from_user is not None:
-                message_from = msg.from_user.id
-                reply_to = msg.message_id
-                links |= _collect_all_links(msg)
-                break
-        isec = links & self._blocklist
-        if len(isec):
-            logging.info("Message mentions blocked content: " + " ".join(sorted(isec)))
-            await self._handle_scam(context, update.effective_chat.id, message_from, reply_to)
+        if update.message is None and update.edited_message is None:
+            return
+
+        msg = update.message or update.edited_message
+
+        verdict = FilterResult.empty()
+        for f in self._filters:
+            verdict = verdict.append(f.assess(update))
+
+        logging.info(f"{verdict}")
+
+        if verdict.verdict == Verdict.SCAM:
+            await self._handle_scam(
+                context, update.effective_chat.id, msg.from_user.id, msg.message_id)
 
     def start(self):
         app = ApplicationBuilder().token(self._cfg.token).build()
