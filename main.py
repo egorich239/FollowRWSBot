@@ -3,6 +3,7 @@
 import argparse
 import itertools
 import json
+import logging
 import os
 import sys
 import urllib
@@ -15,6 +16,7 @@ from telegram import constants, Update, Message
 from telegram.ext import filters, ApplicationBuilder, CallbackContext, CommandHandler, MessageHandler
 
 from url_normalize import url_normalize
+
 
 @dataclass_json
 @dataclass
@@ -76,13 +78,14 @@ class Bot:
         admins = await context.bot.get_chat_administrators(chat_id)
         admin_ids = [a.user.id for a in admins]
         if context.bot.id in admin_ids:
+            logging.info("Admin mode: deleting the message")
             await context.bot.delete_message(chat_id=chat_id, message_id=reply_to)
         else:
+            logging.info("Canary mode: issuing a warning")
             await context.bot.send_message(chat_id=chat_id, text=self._cfg.warning, reply_to_message_id=reply_to)
 
 
     async def _handle_message(self, update: Update, context: CallbackContext.DEFAULT_TYPE):
-        print("Message received")
         links = set()
         for msg in [update.message, update.edited_message]:
             if msg is not None and msg.from_user is not None:
@@ -90,7 +93,9 @@ class Bot:
                 reply_to = msg.message_id
                 links |= _collect_all_links(msg)
                 break
-        if len(links & self._blocklist):
+        isec = links & self._blocklist
+        if len(isec):
+            logging.info("Message mentions blocked content: " + " ".join(sorted(isec)))
             await self._handle_scam(context, update.effective_chat.id, message_from, reply_to)
 
 
@@ -98,16 +103,23 @@ class Bot:
         app = ApplicationBuilder().token(self._cfg.token).build()
         app.add_handler(MessageHandler(filters.ALL, self._handle_message))
         if self._cfg.webhook is None:
+            logging.info("Starting in polling mode")
             app.run_polling()
         else:
+            webhook_url = f"{self._cfg.webhook.hostname}/{self._cfg.webhook.path}"
+            addr = self._cfg.webhook.address
+            port = self._cfg.webhook.port
+            logging.info(f"Starting webhook at {webhook_url}; backend at {addr}:{port}")
             app.run_webhook(
-                    listen=self._cfg.webhook.address,
-                    port=self._cfg.webhook.port,
-                    url_path=self._cfg.webhook.path,
-                    webhook_url=f"{self._cfg.webhook.hostname}/{self._cfg.webhook.path}")
+                listen=addr, port=port, url_path=self._cfg.webhook.path, webhook_url=webhook_url)
 
 
 def main(args: List[str]) -> None:
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+
     _args: argparse.Namespace = _make_argparser().parse_args(args[1:])
 
     with open(_args.k, "r") as config:
