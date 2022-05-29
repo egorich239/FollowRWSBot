@@ -88,7 +88,7 @@ class Bot:
             app.run_polling()
         else:
             p = urllib.parse.urlparse(self._cfg.webhook_url)
-            app.set_webhook(self._cfg.webhook_url)
+            app.bot.set_webhook(self._cfg.webhook_url)
             app.run_webhook(listen="::", port=p.port or 80, path=p.path[1:] if p.path.startswith("/") else "/test")
 
 
