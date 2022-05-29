@@ -10,7 +10,7 @@ import sys
 import urllib
 
 from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json
+from dataclasses_json import dataclass_json, CatchAll, Undefined
 from typing import Any, Dict, List, Optional, Set
 
 from telegram import constants, Update, Message
@@ -34,13 +34,13 @@ class WebhookConfig:
 class Config:
     token: str
     warning: str
-    blocklist: str
     filters: List[Dict[str, Any]]
     webhook: Optional[WebhookConfig] = None
+    log_level: str = "INFO"
 
 
-@enum.Enum
-class Verdict:
+@enum.unique
+class Verdict(enum.IntEnum):
     SAFE = 0
     QUESTIONABLE = 10
     SCAM = 20
@@ -64,9 +64,9 @@ class FilterResult:
         return FilterResult(v, explanation=e)
 
     def __str__(self):
-        res = f"{self.verdict}"
+        res = f"{self.verdict.name}"
         if self.explanation:
-            res += " based on the following evidence:" + "".join("\n{e}" for e in self.explanation)
+            res += " based on the following evidence:" + "".join(f"\n{e}" for e in self.explanation)
         return res
 
 
@@ -77,8 +77,8 @@ class BlocklistFilter:
     @classmethod
     def from_config(cls, filename: str):
         with open(filename, "r") as f:
-            res = cls(f.read().splitlines())
-        logging.debug(f"Blocklist: {res.blocklist}")
+            res = cls(set(f.read().splitlines()))
+        logging.info(f"Blocklist: {res.blocklist}")
         return res
 
     def assess(self, update: Update):
@@ -89,11 +89,12 @@ class BlocklistFilter:
                 reply_to = msg.message_id
                 links |= _collect_all_links(msg)
                 break
-        isec = links & self._blocklist
+        isec = links & self.blocklist
         if len(isec):
             return FilterResult(
                 verdict=Verdict.SCAM, explanation=["Message mentions blocked content: " + " ".join(
                     sorted(isec))])
+        return FilterResult(Verdict.SAFE)
 
 
 FILTERS = {"blocklist": BlocklistFilter, }
@@ -139,8 +140,8 @@ class Bot:
     def _load_filters(self):
         res = []
         for f in self._cfg.filters:
-            clname = f["name"]
-            parms = {k: v for k, v in f.items() if k != "name"}
+            clname = f["filter"]
+            parms = {k: v for k, v in f.items() if k != "filter"}
             res.append(FILTERS[clname].from_config(**parms))
         return res
 
@@ -172,7 +173,7 @@ class Bot:
         for f in self._filters:
             verdict = verdict.append(f.assess(update))
 
-        logging.info(f"{verdict}")
+        logging.info(f"Verdict: {verdict}")
 
         if verdict.verdict == Verdict.SCAM:
             await self._handle_scam(
@@ -194,14 +195,13 @@ class Bot:
 
 
 def main(args: List[str]) -> None:
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
     _args: argparse.Namespace = _make_argparser().parse_args(args[1:])
 
     with open(_args.k, "r") as config:
         cfg_str = config.read()
     cfg: Config = Config.schema().loads(cfg_str)
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=cfg.log_level)
 
     b: Bot = Bot(cfg)
     b.start()
