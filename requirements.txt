@@ -1,5 +1,6 @@
 --pre
 
+dataclasses_json == 0.5.*
 python-telegram-bot == 20.0a0
 url-normalize == 1.4.*
 

@@ -7,7 +7,8 @@ import os
 import sys
 import urllib
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from dataclasses_json import dataclass_json
 from typing import List, Optional, Set
 
 from telegram import constants, Update, Message
@@ -15,12 +16,22 @@ from telegram.ext import filters, ApplicationBuilder, CallbackContext, CommandHa
 
 from url_normalize import url_normalize
 
+@dataclass_json
+@dataclass
+class WebhookConfig:
+    hostname: str
+    path: str
+    address: str = "0.0.0.0"
+    port: int = field(default_factory=lambda: int(os.environ["PORT"]))
+    
+
+@dataclass_json
 @dataclass
 class Config:
     token: str
     warning: str
     blocklist: str
-    webhook_url: Optional[str] = None
+    webhook: Optional[WebhookConfig] = None
 
 
 def _make_argparser() -> argparse.ArgumentParser:
@@ -71,6 +82,7 @@ class Bot:
 
 
     async def _handle_message(self, update: Update, context: CallbackContext.DEFAULT_TYPE):
+        print("Message received")
         links = set()
         for msg in [update.message, update.edited_message]:
             if msg is not None and msg.from_user is not None:
@@ -85,24 +97,22 @@ class Bot:
     def start(self):
         app = ApplicationBuilder().token(self._cfg.token).build()
         app.add_handler(MessageHandler(filters.ALL, self._handle_message))
-        if self._cfg.webhook_url is None:
+        if self._cfg.webhook is None:
             app.run_polling()
         else:
-            p = urllib.parse.urlparse(self._cfg.webhook_url)
             app.run_webhook(
-                    listen="::", 
-                    port=int(os.environ["PORT"]),
-                    url_path=p.path[1:] if p.path.startswith("/") else "/test",
-                    webhook_url=self._cfg.webhook_url)
+                    listen=self._cfg.webhook.address,
+                    port=self._cfg.webhook.port,
+                    url_path=self._cfg.webhook.path,
+                    webhook_url=f"{self._cfg.webhook.hostname}/{self._cfg.webhook.path}")
 
 
 def main(args: List[str]) -> None:
     _args: argparse.Namespace = _make_argparser().parse_args(args[1:])
 
-    token: str = ""
     with open(_args.k, "r") as config:
-        j = json.load(config)
-        cfg: Config = Config(**j)
+        cfg_str = config.read()
+    cfg: Config = Config.schema().loads(cfg_str)
 
     b: Bot = Bot(cfg)
     b.start()
