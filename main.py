@@ -62,6 +62,7 @@ class Bot:
         self._blocklist: Set[str] = set()
         self._load_blocklist()
         self._store_blocklist()
+        self._last_post = None
 
     def _load_blocklist(self) -> None:
         with open(self._cfg.blocklist) as f:
@@ -81,8 +82,13 @@ class Bot:
             logging.info("Admin mode: deleting the message")
             await context.bot.delete_message(chat_id=chat_id, message_id=reply_to)
         else:
-            logging.info("Canary mode: issuing a warning")
-            await context.bot.send_message(chat_id=chat_id, text=self._cfg.warning, reply_to_message_id=reply_to)
+            now = datetime.datetime.now()
+            if self._last_post is not None and (now - self._last_post).total_seconds() < 60:
+                logging.info("Canary mode: throttled a warning")
+            else:
+                logging.info("Canary mode: issuing a warning")
+                await context.bot.send_message(chat_id=chat_id, text=self._cfg.warning, reply_to_message_id=reply_to)
+                self._last_post = now
 
 
     async def _handle_message(self, update: Update, context: CallbackContext.DEFAULT_TYPE):
