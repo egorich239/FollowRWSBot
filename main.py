@@ -7,7 +7,7 @@ import sys
 import urllib
 
 from dataclasses import dataclass
-from typing import List, Set
+from typing import List, Optional, Set
 
 from telegram import constants, Update, Message
 from telegram.ext import filters, ApplicationBuilder, CallbackContext, CommandHandler, MessageHandler
@@ -19,6 +19,7 @@ class Config:
     token: str
     warning: str
     blocklist: str
+    webhook_url: Optional[str] = None
 
 
 def _make_argparser() -> argparse.ArgumentParser:
@@ -83,7 +84,12 @@ class Bot:
     def start(self):
         app = ApplicationBuilder().token(self._cfg.token).build()
         app.add_handler(MessageHandler(filters.ALL, self._handle_message))
-        app.run_polling()
+        if self._cfg.webhook_url is None:
+            app.run_polling()
+        else:
+            p = urllib.parse.urlparse(self._cfg.webhook_url)
+            app.set_webhook(self._cfg.webhook_url)
+            app.run_webhook(listen="::", port=p.port or 80, path=p.path[1:] if p.path.startswith("/") else "/test")
 
 
 def main(args: List[str]) -> None:
