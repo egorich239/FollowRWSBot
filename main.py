@@ -3,6 +3,7 @@
 import argparse
 import itertools
 import json
+import os
 import sys
 import urllib
 
@@ -90,7 +91,7 @@ class Bot:
             p = urllib.parse.urlparse(self._cfg.webhook_url)
             app.run_webhook(
                     listen="::", 
-                    port=p.port or 80, 
+                    port=int(os.environ["PORT"]),
                     url_path=p.path[1:] if p.path.startswith("/") else "/test",
                     webhook_url=self._cfg.webhook_url)
 
